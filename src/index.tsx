@@ -5,7 +5,7 @@ import ReactDOM from 'react-dom';
 
 import './styles.css';
 import { getAsset, Loader } from './assets';
-import { HeightT, Position, PromiseData, ToastT, ToastToDismiss, ExternalToast, ToasterProps } from './types';
+import { HeightT, Position, ToastT, ToastToDismiss, ExternalToast, ToasterProps } from './types';
 import { ToastState, toast } from './state';
 
 // Visible toasts amount
@@ -26,8 +26,6 @@ const GAP = 14;
 const SWIPE_TRESHOLD = 20;
 
 const TIME_BEFORE_UNMOUNT = 200;
-
-const isPromise = (toast: ToastT): toast is PromiseData & { id: number } => Boolean(toast.promise);
 
 interface ToastProps {
   toast: ToastT;
@@ -73,10 +71,8 @@ const Toast = (props: ToastProps) => {
   const [removed, setRemoved] = React.useState(false);
   const [swiping, setSwiping] = React.useState(false);
   const [swipeOut, setSwipeOut] = React.useState(false);
-  const [promiseStatus, setPromiseStatus] = React.useState<'loading' | 'success' | 'error' | null>(null);
   const [offsetBeforeRemove, setOffsetBeforeRemove] = React.useState(0);
   const [initialHeight, setInitialHeight] = React.useState(0);
-  const [promiseResult, setPromiseResult] = React.useState<React.ReactNode | string>(null);
   const toastRef = React.useRef<HTMLLIElement>(null);
   const isFront = index === 0;
   const isVisible = index + 1 <= visibleToasts;
@@ -97,7 +93,7 @@ const Toast = (props: ToastProps) => {
   const offset = React.useRef(0);
   const closeTimerRemainingTimeRef = React.useRef(duration);
   const lastCloseTimerStartTimeRef = React.useRef(0);
-  const pointerStartYRef = React.useRef<number | null>(null);
+  const pointerStartRef = React.useRef<{ x: number; y: number } | null>(null);
   const [y, x] = position.split('-');
   const toastsHeightBefore = React.useMemo(() => {
     return heights.reduce((prev, curr, reducerIndex) => {
@@ -110,7 +106,8 @@ const Toast = (props: ToastProps) => {
     }, 0);
   }, [heights, heightIndex]);
   const invert = toast.invert || ToasterInvert;
-  const disabled = promiseStatus === 'loading';
+  const disabled = toastType === 'loading';
+
   offset.current = React.useMemo(() => heightIndex * GAP + toastsHeightBefore, [heightIndex, toastsHeightBefore]);
 
   React.useEffect(() => {
@@ -118,32 +115,24 @@ const Toast = (props: ToastProps) => {
     setMounted(true);
   }, []);
 
-  React.useEffect(() => {
-    if (isPromise(toast)) {
-      setPromiseStatus('loading');
-      const promiseHandler = (promise: Promise<any>) => {
-        promise
-          .then((data) => {
-            if (toast.success && typeof toast.success === 'function') {
-              setPromiseResult(toast.success(data));
-            }
-            setPromiseStatus('success');
-          })
-          .catch((error) => {
-            setPromiseStatus('error');
-            if (toast.error && typeof toast.error === 'function') {
-              setPromiseResult(toast.error(error));
-            }
-          });
-      };
+  React.useLayoutEffect(() => {
+    if (!mounted) return;
+    const toastNode = toastRef.current;
+    const originalHeight = toastNode.style.height;
+    toastNode.style.height = 'auto';
+    const newHeight = toastNode.getBoundingClientRect().height;
+    toastNode.style.height = originalHeight;
 
-      if (toast.promise instanceof Promise) {
-        promiseHandler(toast.promise);
-      } else if (typeof toast.promise === 'function') {
-        promiseHandler(toast.promise());
-      }
+    setInitialHeight(newHeight);
+
+    const alreadyExists = heights.find((height) => height.toastId === toast.id);
+
+    if (!alreadyExists) {
+      setHeights((h) => [{ toastId: toast.id, height: newHeight }, ...h]);
+    } else {
+      setHeights((h) => h.map((height) => (height.toastId === toast.id ? { ...height, height: newHeight } : height)));
     }
-  }, [toast]);
+  }, [toast.title, toast.description]);
 
   const deleteToast = React.useCallback(() => {
     // Save the offset for the exit swipe animation
@@ -157,7 +146,7 @@ const Toast = (props: ToastProps) => {
   }, [toast, removeToast, setHeights, offset]);
 
   React.useEffect(() => {
-    if ((toast.promise && promiseStatus === 'loading') || toast.duration === Infinity) return;
+    if ((toast.promise && toastType === 'loading') || toast.duration === Infinity) return;
     let timeoutId: NodeJS.Timeout;
 
     // Pause the timer on each hover
@@ -188,13 +177,14 @@ const Toast = (props: ToastProps) => {
     }
 
     return () => clearTimeout(timeoutId);
-  }, [expanded, interacting, expandByDefault, toast, duration, deleteToast, toast.promise, promiseStatus]);
+  }, [expanded, interacting, expandByDefault, toast, duration, deleteToast, toast.promise, toastType]);
 
   React.useEffect(() => {
     const toastNode = toastRef.current;
 
     if (toastNode) {
       const height = toastNode.getBoundingClientRect().height;
+
       // Add toast height tot heights array after the toast is mounted
       setInitialHeight(height);
       setHeights((h) => [{ toastId: toast.id, height }, ...h]);
@@ -208,21 +198,6 @@ const Toast = (props: ToastProps) => {
       deleteToast();
     }
   }, [toast.delete]);
-
-  const promiseTitle = React.useMemo(() => {
-    if (!isPromise(toast)) return null;
-
-    switch (promiseStatus) {
-      case 'loading':
-        return toast.loading;
-      case 'success':
-        return typeof toast.success === 'function' ? promiseResult : toast.success;
-      case 'error':
-        return typeof toast.error === 'function' ? promiseResult : toast.error;
-      default:
-        return null;
-    }
-  }, [promiseStatus, promiseResult]);
 
   return (
     <li
@@ -243,7 +218,7 @@ const Toast = (props: ToastProps) => {
       data-index={index}
       data-front={isFront}
       data-swiping={swiping}
-      data-type={promiseStatus !== 'loading' && promiseStatus ? promiseStatus : toastType}
+      data-type={toastType}
       data-invert={invert}
       data-swipe-out={swipeOut}
       data-expanded={Boolean(expanded || (expandByDefault && mounted))}
@@ -265,10 +240,12 @@ const Toast = (props: ToastProps) => {
         (event.target as HTMLElement).setPointerCapture(event.pointerId);
         if ((event.target as HTMLElement).tagName === 'BUTTON') return;
         setSwiping(true);
-        pointerStartYRef.current = event.clientY;
+        pointerStartRef.current = { x: event.clientX, y: event.clientY };
       }}
       onPointerUp={() => {
         if (swipeOut) return;
+
+        pointerStartRef.current = null;
         const swipeAmount = Number(toastRef.current?.style.getPropertyValue('--swipe-amount').replace('px', '') || 0);
 
         // Remove only if treshold is met
@@ -281,22 +258,26 @@ const Toast = (props: ToastProps) => {
         }
 
         toastRef.current?.style.setProperty('--swipe-amount', '0px');
-        pointerStartYRef.current = null;
         setSwiping(false);
       }}
       onPointerMove={(event) => {
-        if (!pointerStartYRef.current) return;
+        if (!pointerStartRef.current) return;
 
-        const yPosition = event.clientY - pointerStartYRef.current;
+        const yPosition = event.clientY - pointerStartRef.current.y;
+        const xPosition = event.clientX - pointerStartRef.current.x;
 
-        const isAllowedToSwipe = y === 'top' ? yPosition < 0 : yPosition > 0;
-        // We don't want to swipe to the left and vice versa depending on toast position
-        if (!isAllowedToSwipe) {
-          toastRef.current?.style.setProperty('--swipe-amount', '0px');
-          return;
+        const clamp = y === 'top' ? Math.min : Math.max;
+        const clampedY = clamp(0, yPosition);
+        const swipeStartThreshold = event.pointerType === 'touch' ? 10 : 2;
+        const isAllowedToSwipe = clampedY > swipeStartThreshold;
+
+        if (isAllowedToSwipe) {
+          toastRef.current?.style.setProperty('--swipe-amount', `${yPosition}px`);
+        } else if (Math.abs(xPosition) > swipeStartThreshold) {
+          // User is swiping in wrong direction so we disable swipe gesture
+          // for the current pointer down interaction
+          pointerStartRef.current = null;
         }
-
-        toastRef.current?.style.setProperty('--swipe-amount', `${yPosition}px`);
       }}
     >
       {closeButton && !toast.jsx ? (
@@ -335,15 +316,13 @@ const Toast = (props: ToastProps) => {
         <>
           {toastType || toast.icon || toast.promise ? (
             <div data-icon="">
-              {toast.promise ? <Loader visible={promiseStatus === 'loading'} /> : null}
-              {toast.icon || getAsset(promiseStatus ?? toast.type)}
+              {toast.promise ? <Loader visible={toastType === 'loading'} /> : null}
+              {toast.icon || getAsset(toastType)}
             </div>
           ) : null}
 
           <div data-content="">
-            <div data-title="">
-              <>{toast.title ?? promiseTitle}</>
-            </div>
+            <div data-title="">{toast.title}</div>
             {toast.description ? (
               <div data-description="" className={descriptionClassName + toastDescriptionClassname}>
                 {toast.description}
@@ -367,9 +346,10 @@ const Toast = (props: ToastProps) => {
           {toast.action ? (
             <button
               data-button=""
-              onClick={() => {
+              onClick={(event) => {
+                toast.action?.onClick(event);
+                if (event.defaultPrevented) return;
                 deleteToast();
-                toast.action?.onClick();
               }}
             >
               {toast.action.label}
@@ -420,7 +400,20 @@ const Toaster = (props: ToasterProps) => {
       // Prevent batching, temp solution.
       setTimeout(() => {
         ReactDOM.flushSync(() => {
-          setToasts((toasts) => [toast, ...toasts]);
+          setToasts((toasts) => {
+            const indexOfExistingToast = toasts.findIndex((t) => t.id === toast.id);
+
+            // Upadte the toast if it already exists
+            if (indexOfExistingToast !== -1) {
+              return [
+                ...toasts.slice(0, indexOfExistingToast),
+                { ...toasts[indexOfExistingToast], ...toast },
+                ...toasts.slice(indexOfExistingToast + 1),
+              ];
+            }
+
+            return [toast, ...toasts];
+          });
         });
       });
     });

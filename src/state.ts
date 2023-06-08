@@ -1,5 +1,5 @@
 import React from 'react';
-import { ExternalToast, ToastT, PromiseData, PromiseT, ToastToDismiss } from './types';
+import { ExternalToast, ToastT, PromiseData, PromiseT, ToastToDismiss, ToastTypes } from './types';
 
 let toastsCounter = 0;
 
@@ -24,7 +24,34 @@ class Observer {
 
   publish = (data: ToastT) => {
     this.subscribers.forEach((subscriber) => subscriber(data));
+  };
+
+  addToast = (data: ToastT) => {
+    this.publish(data);
     this.toasts = [...this.toasts, data];
+  };
+
+  create = (data: ExternalToast & { message?: string | React.ReactNode; type?: ToastTypes }) => {
+    const { message, ...rest } = data;
+    const id = typeof data?.id === 'number' || data.id?.length > 0 ? data.id : toastsCounter++;
+    const alreadyExists = this.toasts.find((toast) => {
+      return toast.id === id;
+    });
+
+    if (alreadyExists) {
+      this.toasts = this.toasts.map((toast) => {
+        if (toast.id === id) {
+          this.publish({ ...toast, ...data, id, title: message });
+          return { ...toast, ...data, id, title: message };
+        }
+
+        return toast;
+      });
+    } else {
+      this.addToast({ title: message, ...rest, id });
+    }
+
+    return id;
   };
 
   dismiss = (id?: number | string) => {
@@ -39,26 +66,27 @@ class Observer {
   };
 
   message = (message: string | React.ReactNode, data?: ExternalToast) => {
-    const id = data?.id || toastsCounter++;
-    this.publish({ ...data, id, title: message });
-    return id;
+    return this.create({ ...data, message });
   };
 
   error = (message: string | React.ReactNode, data?: ExternalToast) => {
-    const id = data?.id || toastsCounter++;
-    this.publish({ ...data, id, type: 'error', title: message });
-    return id;
+    return this.create({ ...data, message, type: 'error' });
   };
 
   success = (message: string | React.ReactNode, data?: ExternalToast) => {
-    const id = data?.id || toastsCounter++;
-    this.publish({ ...data, id, type: 'success', title: message });
-    return id;
+    return this.create({ ...data, type: 'success', message });
   };
 
-  promise = (promise: PromiseT, data?: PromiseData) => {
-    const id = data?.id || toastsCounter++;
-    this.publish({ ...data, promise, id });
+  promise = <ToastData>(promise: PromiseT<ToastData>, data?: PromiseData<ToastData>) => {
+    const id = this.create({ ...data, promise, type: 'loading', message: data.loading });
+    const p = promise instanceof Promise ? promise : promise();
+    p.then((promiseData) => {
+      const message = typeof data.success === 'function' ? data.success(promiseData) : data.success;
+      this.create({ id, type: 'success', message });
+    }).catch((error) => {
+      const message = typeof data.error === 'function' ? data.error(error) : data.error;
+      this.create({ id, type: 'error', message });
+    });
     return id;
   };
 
@@ -75,7 +103,7 @@ export const ToastState = new Observer();
 const toastFunction = (message: string | React.ReactNode, data?: ExternalToast) => {
   const id = data?.id || toastsCounter++;
 
-  ToastState.publish({
+  ToastState.addToast({
     title: message,
     ...data,
     id,
